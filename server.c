@@ -39,6 +39,18 @@ void send_state(int sock_fd, struct gameDB* db, int player) {
            (struct sockaddr *)&db->players[player], sizeof(db->players[player]));
 }
 
+// each game is saved to its own file, named by its gameId
+void save_path(char* path, size_t len, int gameId) {
+    snprintf(path, len, "game_%d.sav", gameId);
+}
+
+void save_db(struct gameDB* db) {
+    char path[64];
+    save_path(path, sizeof(path), db->g.gameId);
+    if (savegame(db, path) != 0)
+        fprintf(stderr, "failed to save %s\n", path);
+}
+
 int main(int argc, char* argv[]) {
     int sock_fd = socket(AF_INET, SOCK_DGRAM, 0);
 
@@ -56,6 +68,17 @@ int main(int argc, char* argv[]) {
     struct gameDB* games = malloc(MAX_GAMES * sizeof(struct gameDB));
     int num_games = 0;
 
+    // recovery mode: reload saved games 0, 1, 2, ... until one is missing
+    if (argc > 1 && atoi(argv[1]) == 1) {
+        char path[64];
+        save_path(path, sizeof(path), num_games);
+        while (num_games < MAX_GAMES && loadgame(&games[num_games], path) == 0) {
+            num_games++;
+            save_path(path, sizeof(path), num_games);
+        }
+        printf("Recovered %d game(s)\n", num_games);
+    }
+
     while (1) {
         struct request req;
         socklen_t addr_len = sizeof(client_addr);
@@ -69,12 +92,14 @@ int main(int argc, char* argv[]) {
             db->num_players = 1;
             db->players[0] = client_addr;
             num_games++;
+            save_db(db);
             send_state(sock_fd, db, 0);
         } else if (req.type == REQ_JOIN && req.gameId >= 0 && req.gameId < num_games &&
                    games[req.gameId].num_players == 1) {
             struct gameDB* db = &games[req.gameId];
             db->num_players = 2;
             db->players[1] = client_addr;
+            save_db(db);
             // tell both players the game has started
             send_state(sock_fd, db, 0);
             send_state(sock_fd, db, 1);
@@ -83,6 +108,7 @@ int main(int argc, char* argv[]) {
             struct gameDB* db = &games[req.gameId];
             if (db->num_players == 2 && check_win(&db->g) == -1 &&
                 make_move(&db->g, req.player, req.col) != -1) {
+                save_db(db);
                 send_state(sock_fd, db, 0);
                 send_state(sock_fd, db, 1);
             } else {
